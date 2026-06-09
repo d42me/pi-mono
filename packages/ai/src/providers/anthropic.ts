@@ -662,7 +662,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 					}
 				} else if (event.type === "message_delta") {
 					if (event.delta.stop_reason) {
-						output.stopReason = mapStopReason(event.delta.stop_reason);
+						const providerStopReason = event.delta.stop_reason;
+						output.stopReason = mapStopReason(providerStopReason);
+						if (output.stopReason === "error") {
+							output.errorMessage = `Anthropic stop_reason: ${providerStopReason}`;
+						}
 					}
 					// Only update usage fields if present (not null).
 					// Preserves input_tokens from message_start when proxies omit it in message_delta.
@@ -690,7 +694,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			}
 
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
-				throw new Error("An unknown error occurred");
+				throw new Error(output.errorMessage ?? "An unknown error occurred");
 			}
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
@@ -1230,6 +1234,8 @@ function mapStopReason(reason: Anthropic.Messages.StopReason | string): StopReas
 			return "error";
 		case "pause_turn": // Stop is good enough -> resubmit
 			return "stop";
+		case "model_context_window_exceeded":
+			return "length";
 		case "stop_sequence":
 			return "stop"; // We don't supply stop sequences, so this should never happen
 		case "sensitive": // Content flagged by safety filters (not yet in SDK types)

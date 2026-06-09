@@ -78,6 +78,47 @@ function createFakeAnthropicClient(response: Response): Anthropic {
 	} as unknown as Anthropic;
 }
 
+function createMessageStartEvent(outputTokens = 0): { event: string; data: string } {
+	return {
+		event: "message_start",
+		data: JSON.stringify({
+			type: "message_start",
+			message: {
+				id: "msg_test",
+				usage: {
+					input_tokens: 12,
+					output_tokens: outputTokens,
+					cache_read_input_tokens: 0,
+					cache_creation_input_tokens: 0,
+				},
+			},
+		}),
+	};
+}
+
+function createMessageDeltaEvent(stopReason: string, outputTokens = 0): { event: string; data: string } {
+	return {
+		event: "message_delta",
+		data: JSON.stringify({
+			type: "message_delta",
+			delta: { stop_reason: stopReason },
+			usage: {
+				input_tokens: 12,
+				output_tokens: outputTokens,
+				cache_read_input_tokens: 0,
+				cache_creation_input_tokens: 0,
+			},
+		}),
+	};
+}
+
+function createMessageStopEvent(): { event: string; data: string } {
+	return {
+		event: "message_stop",
+		data: JSON.stringify({ type: "message_stop" }),
+	};
+}
+
 describe("Anthropic raw SSE parsing", () => {
 	it("repairs malformed SSE JSON and malformed streamed tool JSON", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
@@ -164,6 +205,47 @@ describe("Anthropic raw SSE parsing", () => {
 			path: "A\\H",
 			text: "col1\tcol2",
 		});
+	});
+
+	it("reports Anthropic refusal stop reasons", async () => {
+		const model = getModel("anthropic", "claude-fable-5");
+		const context: Context = {
+			messages: [{ role: "user", content: "Say hello.", timestamp: Date.now() }],
+		};
+		const response = createSseResponse([
+			createMessageStartEvent(2),
+			createMessageDeltaEvent("refusal", 2),
+			createMessageStopEvent(),
+		]);
+
+		const stream = streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(response),
+		});
+		const result = await stream.result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("Anthropic stop_reason: refusal");
+	});
+
+	it("maps Anthropic model_context_window_exceeded to length", async () => {
+		const model = getModel("anthropic", "claude-fable-5");
+		const context: Context = {
+			messages: [{ role: "user", content: "Say hello.", timestamp: Date.now() }],
+		};
+		const response = createSseResponse([
+			...minimalAnthropicEvents.slice(0, 4),
+			createMessageDeltaEvent("model_context_window_exceeded", 5),
+			createMessageStopEvent(),
+		]);
+
+		const stream = streamAnthropic(model, context, {
+			client: createFakeAnthropicClient(response),
+		});
+		const result = await stream.result();
+
+		expect(result.stopReason).toBe("length");
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.content).toEqual([{ type: "text", text: "Hello" }]);
 	});
 
 	it("ignores unknown SSE events after message_stop", async () => {
